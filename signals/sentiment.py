@@ -94,13 +94,31 @@ class CryptoPanicProvider(NewsProvider):
         self.api_key = api_key
         self.config = config
 
+    def _extract_source_from_description(self, description: str) -> str:
+        """Try to extract source name from description like 'According to X, ...'"""
+        if not description:
+            return "CryptoPanic"
+
+        # Common patterns: "According to X, ..." or "X reports that ..."
+        import re
+        patterns = [
+            r"^According to ([A-Za-z0-9\s]+),",
+            r"^([A-Za-z0-9\s]+) reports? that",
+            r"^([A-Za-z0-9\s]+) announced",
+        ]
+        for pattern in patterns:
+            match = re.match(pattern, description)
+            if match:
+                return match.group(1).strip()
+
+        return "CryptoPanic"
+
     def fetch_articles(self, symbol: str | None = None) -> list[NewsArticle]:
         """Fetch articles from CryptoPanic."""
         try:
             params: dict[str, Any] = {
                 "auth_token": self.api_key,
                 "public": "true",
-                "kind": "news",
             }
 
             if symbol:
@@ -111,7 +129,7 @@ class CryptoPanicProvider(NewsProvider):
             response = requests.get(
                 self.BASE_URL,
                 params=params,
-                timeout=10,
+                timeout=15,
             )
             response.raise_for_status()
             data = response.json()
@@ -119,21 +137,45 @@ class CryptoPanicProvider(NewsProvider):
             articles = []
             for item in data.get("results", [])[:self.config.max_articles_per_fetch]:
                 try:
-                    published = datetime.fromisoformat(
-                        item["published_at"].replace("Z", "+00:00")
-                    )
+                    # Parse published date
+                    published_str = item.get("published_at", "")
+                    if published_str:
+                        published = datetime.fromisoformat(
+                            published_str.replace("Z", "+00:00")
+                        )
+                    else:
+                        published = datetime.now(timezone.utc)
+
+                    description = item.get("description", "")
+                    slug = item.get("slug", "")
+
+                    # Construct URL from slug
+                    url = f"https://cryptopanic.com/news/{item.get('id', '')}/{slug}" if slug else ""
+
+                    # Extract source from description or use kind
+                    source = self._extract_source_from_description(description)
+
                     articles.append(NewsArticle(
                         title=item.get("title", ""),
-                        source=item.get("source", {}).get("title", "Unknown"),
+                        source=source,
                         published_at=published,
-                        url=item.get("url", ""),
-                        summary=None,
+                        url=url,
+                        summary=description,
                     ))
                 except Exception as e:
                     logger.debug(f"Failed to parse article: {e}")
 
+            logger.info(
+                f"CryptoPanic: Fetched {len(articles)} articles" +
+                (f" for {symbol}" if symbol else ""),
+                extra={"symbol": symbol, "count": len(articles)},
+            )
+
             return articles
 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"CryptoPanic API request error: {e}")
+            return []
         except Exception as e:
             logger.error(f"CryptoPanic API error: {e}")
             return []
