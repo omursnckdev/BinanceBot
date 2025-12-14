@@ -195,8 +195,8 @@ class Settings(BaseSettings):
     allow_live_trading: bool = Field(default=False)
 
     # ===== API CREDENTIALS (loaded from env vars) =====
-    binance_api_key: str = Field(default="")
-    binance_api_secret: str = Field(default="")
+    gate_api_key: str = Field(default="", validation_alias="binance_api_key")
+    gate_api_secret: str = Field(default="", validation_alias="binance_api_secret")
 
     # ===== TRADING SYMBOLS =====
     symbols: list[str] = Field(
@@ -268,10 +268,10 @@ class Settings(BaseSettings):
     def get_safe_dict(self) -> dict[str, Any]:
         """Get settings dict with secrets masked for logging."""
         data = self.model_dump()
-        if data.get("binance_api_key"):
-            data["binance_api_key"] = self.mask_secret(data["binance_api_key"])
-        if data.get("binance_api_secret"):
-            data["binance_api_secret"] = self.mask_secret(data["binance_api_secret"])
+        if data.get("gate_api_key"):
+            data["gate_api_key"] = self.mask_secret(data["gate_api_key"])
+        if data.get("gate_api_secret"):
+            data["gate_api_secret"] = self.mask_secret(data["gate_api_secret"])
         return data
 
 

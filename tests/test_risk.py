@@ -6,13 +6,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from config import RiskConfig, Settings
-from exchange.binance_client import SymbolInfo
+from exchange.gate_client import SymbolInfo
 from risk.risk_manager import RiskManager, RiskCheckResult
 
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create mock Binance client."""
+    """Create mock Gate.io client."""
     client = MagicMock()
     client.get_usdt_balance.return_value = 10000.0
     client.get_all_positions.return_value = []

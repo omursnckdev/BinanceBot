@@ -18,7 +18,7 @@ from decimal import Decimal
 from typing import Any
 
 from config import RiskConfig, Settings, get_settings
-from exchange.binance_client import BinanceClient
+from exchange.gate_client import GateClient
 from utils.logger import TradingLogger, get_logger
 
 logger: TradingLogger = get_logger(__name__)  # type: ignore
@@ -93,7 +93,7 @@ class RiskManager:
 
     def __init__(
         self,
-        client: BinanceClient,
+        client: GateClient,
         config: RiskConfig | None = None,
         settings: Settings | None = None,
     ) -> None:

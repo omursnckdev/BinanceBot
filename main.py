@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Binance Futures Trading Bot - Main Entry Point
+Gate.io Futures Trading Bot - Main Entry Point
 
 This bot trades USDT-M Futures using a fusion strategy that combines:
 - Technical indicators (RSI, MACD, Bollinger, ATR, EMA)
@@ -28,7 +28,7 @@ from typing import Any
 
 from config import Settings, get_settings
 from data.market_data import MarketDataManager
-from exchange.binance_client import BinanceClient
+from exchange.gate_client import GateClient
 from execution.executor import OrderExecutor
 from risk.risk_manager import RiskManager
 from signals.indicators import IndicatorCalculator
@@ -61,7 +61,7 @@ class TradingBot:
         logger.info("Initializing trading bot components...")
 
         # Core components
-        self.client = BinanceClient(self.settings)
+        self.client = GateClient(self.settings)
         self.market_data = MarketDataManager(self.client, self.settings)
         self.state = StateStore(self.settings, persist_path="data/state.json")
 
@@ -90,7 +90,7 @@ class TradingBot:
         live_enabled = self.settings.allow_live_trading
 
         logger.info("=" * 60)
-        logger.info("BINANCE FUTURES TRADING BOT")
+        logger.info("GATE.IO FUTURES TRADING BOT")
         logger.info("=" * 60)
         logger.info(f"Environment: {env}")
         logger.info(f"Dry Run: {dry_run}")
