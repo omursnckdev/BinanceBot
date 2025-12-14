@@ -1,5 +1,5 @@
-"""Exchange module for Binance integration."""
+"""Exchange module for Gate.io integration."""
 
-from exchange.binance_client import BinanceClient
+from exchange.gate_client import GateClient
 
-__all__ = ["BinanceClient"]
+__all__ = ["GateClient"]

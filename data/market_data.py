@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from config import Settings, get_settings
-from exchange.binance_client import BinanceClient
+from exchange.gate_client import GateClient
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,8 +43,8 @@ class Candle:
     taker_buy_quote_volume: float
 
     @classmethod
-    def from_binance(cls, data: list) -> "Candle":
-        """Create from Binance kline data."""
+    def from_gate(cls, data: list) -> "Candle":
+        """Create from Gate.io kline data."""
         return cls(
             timestamp=int(data[0]),
             open=float(data[1]),
@@ -96,8 +96,8 @@ class Trade:
     is_buyer_maker: bool
 
     @classmethod
-    def from_binance(cls, data: dict[str, Any]) -> "Trade":
-        """Create from Binance aggTrade data."""
+    def from_gate(cls, data: dict[str, Any]) -> "Trade":
+        """Create from Gate.io trade data."""
         return cls(
             trade_id=data["a"],
             price=float(data["p"]),
@@ -127,8 +127,8 @@ class OrderBookSnapshot:
     last_update_id: int
 
     @classmethod
-    def from_binance(cls, data: dict[str, Any]) -> "OrderBookSnapshot":
-        """Create from Binance depth data."""
+    def from_gate(cls, data: dict[str, Any]) -> "OrderBookSnapshot":
+        """Create from Gate.io depth data."""
         return cls(
             timestamp=int(time.time() * 1000),
             bids=[(float(b[0]), float(b[1])) for b in data.get("bids", [])],
@@ -267,7 +267,7 @@ class MarketDataManager:
 
     def __init__(
         self,
-        client: BinanceClient,
+        client: GateClient,
         settings: Settings | None = None,
     ) -> None:
         self.client = client
@@ -294,7 +294,7 @@ class MarketDataManager:
                 limit=limit,
             )
 
-            candles = [Candle.from_binance(k) for k in raw_klines]
+            candles = [Candle.from_gate(k) for k in raw_klines]
             self.get_symbol_data(symbol).add_candles(timeframe, candles)
 
             logger.debug(
@@ -316,7 +316,7 @@ class MarketDataManager:
         """Fetch and store aggregated trades."""
         try:
             raw_trades = self.client.get_agg_trades(symbol=symbol, limit=limit)
-            trades = [Trade.from_binance(t) for t in raw_trades]
+            trades = [Trade.from_gate(t) for t in raw_trades]
             self.get_symbol_data(symbol).add_trades(trades)
 
             logger.debug(
@@ -338,7 +338,7 @@ class MarketDataManager:
         """Fetch and store order book snapshot."""
         try:
             raw_depth = self.client.get_order_book(symbol=symbol, limit=limit)
-            snapshot = OrderBookSnapshot.from_binance(raw_depth)
+            snapshot = OrderBookSnapshot.from_gate(raw_depth)
             self.get_symbol_data(symbol).order_book = snapshot
             self.get_symbol_data(symbol).last_update = time.time()
 

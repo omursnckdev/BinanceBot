@@ -1,6 +1,6 @@
-# Binance Futures Trading Bot
+# Gate.io Futures Trading Bot
 
-A production-grade Python trading bot for Binance USDT-M Futures with a **testnet-first** approach.
+A production-grade Python trading bot for Gate.io USDT-margined futures with a **testnet-first** approach.
 
 ## Features
 
@@ -29,7 +29,7 @@ Built-in safety measures:
 ### 1. Prerequisites
 
 - Python 3.11+
-- Binance Futures Testnet account
+- Gate.io Futures (USDT-settled) account
 
 ### 2. Installation
 
@@ -58,11 +58,10 @@ nano .env  # or your preferred editor
 
 ### 4. Create Testnet API Keys
 
-1. Visit [Binance Futures Testnet](https://testnet.binancefuture.com/)
-2. Log in or create account (uses Binance main account)
-3. Go to API Management
-4. Create a new API key
-5. Copy the API Key and Secret to your `.env` file
+1. Visit [Gate.io Testnet Futures](https://fx-api-testnet.gateio.ws/)
+2. Log in or create an account
+3. Create a new API key with futures permissions
+4. Copy the API Key and Secret to your `.env` file as `GATE_API_KEY` and `GATE_API_SECRET`
 
 ### 5. Running the Bot
 
@@ -103,8 +102,8 @@ DRY_RUN=false
 ALLOW_LIVE_TRADING=true
 
 # Also update API keys to mainnet keys
-BINANCE_API_KEY=your_mainnet_api_key
-BINANCE_API_SECRET=your_mainnet_api_secret
+GATE_API_KEY=your_mainnet_api_key
+GATE_API_SECRET=your_mainnet_api_secret
 ```
 
 ## Project Structure
@@ -115,7 +114,7 @@ BinanceBot/
 ├── main.py                # Main entry point and event loop
 │
 ├── exchange/
-│   └── binance_client.py  # Binance API wrapper
+│   └── gate_client.py  # Gate.io API wrapper
 │
 ├── data/
 │   └── market_data.py     # Candles, trades, order book
@@ -155,8 +154,8 @@ BinanceBot/
 | `ENV` | `testnet` | Environment: `testnet` or `mainnet` |
 | `DRY_RUN` | `true` | Simulate trades without executing |
 | `ALLOW_LIVE_TRADING` | `false` | Additional safety toggle for mainnet |
-| `BINANCE_API_KEY` | - | Your Binance API key |
-| `BINANCE_API_SECRET` | - | Your Binance API secret |
+| `GATE_API_KEY` | - | Your Gate.io API key |
+| `GATE_API_SECRET` | - | Your Gate.io API secret |
 | `SYMBOLS` | BTCUSDT,... | Comma-separated trading pairs |
 | `NEWS_API_KEY` | - | CryptoPanic or NewsAPI key |
 
@@ -230,7 +229,7 @@ Log levels:
 
 ## API Rate Limits
 
-The bot respects Binance rate limits:
+The bot respects Gate.io rate limits:
 - Uses exponential backoff on errors
 - Caches exchange info
 - Batches requests where possible

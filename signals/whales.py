@@ -1,7 +1,7 @@
 """
 Whale activity detection module.
 
-Detects large trades and order book imbalances using Binance public market data.
+Detects large trades and order book imbalances using exchange public market data.
 
 Features:
 - AggTrades analysis: flags unusually large notional trades

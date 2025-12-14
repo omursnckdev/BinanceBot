@@ -18,7 +18,7 @@ from enum import Enum
 from typing import Any
 
 from config import Environment, Settings, get_settings
-from exchange.binance_client import BinanceClient
+from exchange.gate_client import GateClient
 from risk.risk_manager import RiskManager
 from strategy.fusion import TradeAction, TradeDecision
 from utils.logger import TradingLogger, get_logger
@@ -121,7 +121,7 @@ class OrderExecutor:
 
     def __init__(
         self,
-        client: BinanceClient,
+        client: GateClient,
         risk_manager: RiskManager,
         settings: Settings | None = None,
     ) -> None:
