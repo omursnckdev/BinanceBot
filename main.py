@@ -173,20 +173,25 @@ class TradingBot:
             logger.warning(f"Skipping {symbol} due to data fetch failure")
             return
 
-        # Validate data
+        # Validate data - per-symbol check, don't mark entire system unhealthy
         is_valid, reason = self.market_data.is_data_valid(symbol)
         if not is_valid:
-            logger.warning(f"Data validation failed for {symbol}: {reason}")
-            self.state.update_health(data_stale=True)
+            logger.warning(f"Skipping {symbol}: {reason}")
+            # Don't mark entire system as unhealthy - just skip this symbol
             return
 
+        # Data is valid for this symbol - ensure health flag is reset
         self.state.update_health(data_stale=False)
 
         # Get current position
         current_position = self.client.get_position(symbol)
         position_side = None
+        entry_price = 0.0
+        position_qty = 0.0
         if current_position:
             amt = float(current_position.get("positionAmt", 0))
+            entry_price = float(current_position.get("entryPrice", 0))
+            position_qty = abs(amt)
             if amt > 0:
                 position_side = "LONG"
             elif amt < 0:
@@ -195,40 +200,74 @@ class TradingBot:
         # Generate trading decision
         decision = self.strategy.generate_decision(symbol, position_side)
 
-        # Handle existing position
+        # Handle existing position - check for explicit exit signals
         if position_side:
-            # Check if we should close
-            if decision.action == TradeAction.FLAT:
-                self.executor.close_position(symbol, "Whale alert")
+            # Check for whale defensive action (explicit, NOT via FLAT)
+            if decision.defensive_action is not None:
+                logger.warning(
+                    f"Executing defensive action for {symbol}: {decision.defensive_action.value}",
+                    extra={"symbol": symbol, "action": decision.defensive_action.value},
+                )
+                self.executor.execute_defensive_action(
+                    symbol=symbol,
+                    action=decision.defensive_action,
+                    position_side=position_side,
+                    position_qty=position_qty,
+                    entry_price=entry_price,
+                )
                 return
 
-            # Check for opposite signal
-            should_close, reason = self.strategy.should_close_position(
+            # Check for explicit exit signal
+            if decision.exit_reason:
+                self.executor.close_position(symbol, decision.exit_reason)
+                return
+
+            # Check for opposite strong signal (reversal)
+            should_close, close_reason = self.strategy.should_close_position(
                 symbol,
                 position_side,
-                float(current_position.get("entryPrice", 0)),
+                entry_price,
                 self.market_data.get_latest_price(symbol),
             )
             if should_close:
-                self.executor.close_position(symbol, reason)
+                self.executor.close_position(symbol, close_reason)
+
+            # Check time-stop for scalping
+            position_state = self.state.get_position(symbol)
+            if position_state and self._check_time_stop(position_state):
+                self.executor.close_position(symbol, "Time stop")
 
         else:
-            # No position - check if we should open
+            # No position - check if we should open new entry
+            # FLAT means "no entry" - we simply don't open
             if decision.action in (TradeAction.LONG, TradeAction.SHORT):
                 if decision.is_valid:
                     bracket = self.executor.execute_decision(decision)
-                    if bracket:
-                        # Record in state
+                    if bracket and bracket.entry_order.avg_fill_price:
+                        # Use ACTUAL fill price for state and SL/TP calculation
+                        actual_entry = bracket.entry_order.avg_fill_price
+                        actual_qty = bracket.entry_order.filled_qty or bracket.entry_order.quantity
+
+                        # Record in state with actual fill price
                         self.state.add_position(
                             symbol=symbol,
                             side="LONG" if decision.action == TradeAction.LONG else "SHORT",
-                            entry_price=bracket.entry_order.avg_fill_price or self.market_data.get_latest_price(symbol),
-                            quantity=bracket.entry_order.quantity,
+                            entry_price=actual_entry,
+                            quantity=actual_qty,
                             leverage=decision.suggested_leverage,
                             stop_loss_price=bracket.stop_loss_order.stop_price if bracket.stop_loss_order else 0,
                             take_profit_price=bracket.take_profit_order.stop_price if bracket.take_profit_order else None,
                         )
                         self.state.record_action(symbol, decision.action.value, decision.to_dict())
+
+    def _check_time_stop(self, position_state) -> bool:
+        """Check if position has exceeded time limit for scalping."""
+        max_duration_minutes = self.settings.trading.time_stop_minutes
+        if max_duration_minutes <= 0:
+            return False
+
+        age_minutes = position_state.age_hours * 60
+        return age_minutes >= max_duration_minutes
 
     async def _run_loop(self) -> None:
         """Main trading loop."""
