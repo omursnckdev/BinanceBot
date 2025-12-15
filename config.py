@@ -85,13 +85,17 @@ class RiskConfig(BaseModel):
     max_open_positions: int = Field(default=3, ge=1, le=10)
     max_total_exposure_pct: float = Field(default=50.0, ge=1, le=100)
 
-    # Stop-loss
-    atr_sl_multiplier: float = Field(default=2.0, ge=0.5, le=5.0)
-    max_sl_pct: float = Field(default=5.0, ge=0.5, le=20.0)
+    # Stop-loss (scalping profile: 0.6-0.9% default)
+    atr_sl_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    min_sl_pct: float = Field(default=0.6, ge=0.1, le=5.0)
+    max_sl_pct: float = Field(default=0.9, ge=0.5, le=5.0)
 
-    # Take-profit
+    # Take-profit (scalping profile: 1.0-2.0% default)
     enable_take_profit: bool = True
-    tp_r_multiple: float = Field(default=2.0, ge=0.5, le=10.0)
+    min_tp_pct: float = Field(default=1.0, ge=0.5, le=10.0)
+    max_tp_pct: float = Field(default=2.0, ge=1.0, le=20.0)
+    default_tp_pct: float = Field(default=1.2, ge=0.5, le=10.0)
+    tp_r_multiple: float = Field(default=1.5, ge=1.0, le=10.0)  # Min R:R ratio
 
     # Kill-switches
     max_daily_loss_pct: float = Field(default=5.0, ge=1, le=50)
@@ -100,7 +104,7 @@ class RiskConfig(BaseModel):
     # Cooldown
     cooldown_after_loss_seconds: int = Field(default=300, ge=0, le=3600)
 
-    # Time stop
+    # Time stop (scalping: shorter duration)
     max_position_duration_hours: int = Field(default=24, ge=1, le=168)
 
 
@@ -153,18 +157,25 @@ class TradingConfig(BaseModel):
     entry_threshold: float = Field(default=0.3, ge=0.1, le=0.9)
     high_confidence_threshold: float = Field(default=0.7, ge=0.5, le=1.0)
 
-    # Leverage scaling
+    # Leverage scaling (conservative for scalping)
     min_leverage: int = Field(default=2, ge=1, le=10)
     max_leverage: int = Field(default=5, ge=1, le=20)
 
-    # Market conditions
+    # Market conditions (relaxed for testnet)
     max_atr_pct: float = Field(default=5.0, ge=0.5, le=20.0)
-    max_spread_pct: float = Field(default=0.1, ge=0.01, le=1.0)
-    min_liquidity_usd: float = Field(default=100000.0, ge=1000)
+    max_spread_pct: float = Field(default=0.2, ge=0.01, le=1.0)  # Testnet has wider spreads
+    min_liquidity_usd: float = Field(default=50000.0, ge=1000)  # Lower for testnet
 
     # Anti-flip-flop
     min_time_between_trades_seconds: int = Field(default=60, ge=0, le=3600)
     require_trend_confirmation: bool = True
+
+    # Time-stop for scalping (minutes, 0 = disabled)
+    time_stop_minutes: int = Field(default=45, ge=0, le=1440)
+
+    # Scalping-specific
+    skip_entry_on_high_spread: bool = True
+    spread_entry_threshold_pct: float = Field(default=0.05, ge=0.01, le=0.5)
 
 
 class Settings(BaseSettings):

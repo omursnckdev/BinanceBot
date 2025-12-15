@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from config import Environment, Settings, get_settings
-from exchange.gate_client import GateClient
+from config import Environment, Settings, WhaleDefensiveAction, get_settings
+from exchange.binance_client import BinanceClient
 from risk.risk_manager import RiskManager
 from strategy.fusion import TradeAction, TradeDecision
 from utils.logger import TradingLogger, get_logger
@@ -121,7 +121,7 @@ class OrderExecutor:
 
     def __init__(
         self,
-        client: GateClient,
+        client: BinanceClient,
         risk_manager: RiskManager,
         settings: Settings | None = None,
     ) -> None:
@@ -256,33 +256,26 @@ class OrderExecutor:
             )
             return None
 
-        # Get current price
-        current_price = self.client.get_ticker_price(symbol)
+        # Get current price for initial calculations
+        ticker_price = self.client.get_ticker_price(symbol)
 
         # Determine side
         side = "BUY" if decision.action == TradeAction.LONG else "SELL"
         opposite_side = "SELL" if side == "BUY" else "BUY"
+        position_side = "LONG" if side == "BUY" else "SHORT"
 
-        # Calculate stop-loss and take-profit prices
-        sl_price = self.risk.calculate_stop_loss_price(
-            side="LONG" if side == "BUY" else "SHORT",
-            entry_price=current_price,
+        # Calculate initial SL price for position sizing (will be recalculated after fill)
+        initial_sl_price = self.risk.calculate_stop_loss_price(
+            side=position_side,
+            entry_price=ticker_price,
             stop_loss_pct=decision.stop_loss_pct,
         )
 
-        tp_price = None
-        if decision.take_profit_pct:
-            tp_price = self.risk.calculate_take_profit_price(
-                side="LONG" if side == "BUY" else "SHORT",
-                entry_price=current_price,
-                take_profit_pct=decision.take_profit_pct,
-            )
-
-        # Calculate position size
+        # Calculate position size using ticker price (for initial validation)
         quantity, notional = self.risk.calculate_position_size(
             symbol=symbol,
-            entry_price=current_price,
-            stop_loss_price=sl_price,
+            entry_price=ticker_price,
+            stop_loss_price=initial_sl_price,
             leverage=decision.suggested_leverage,
         )
 
@@ -291,8 +284,8 @@ class OrderExecutor:
             symbol=symbol,
             side=side,
             quantity=quantity,
-            entry_price=current_price,
-            stop_loss_price=sl_price,
+            entry_price=ticker_price,
+            stop_loss_price=initial_sl_price,
             leverage=decision.suggested_leverage,
         )
 
@@ -321,22 +314,39 @@ class OrderExecutor:
 
         # Execute or simulate entry
         if self.is_dry_run:
-            entry_order = self._simulate_fill(entry_order, current_price)
+            entry_order = self._simulate_fill(entry_order, ticker_price)
             self._log_order(entry_order, "SIMULATED_ENTRY")
         else:
             entry_order = self._place_real_order(entry_order)
             self._log_order(entry_order, "ENTRY_PLACED")
 
-        # Get actual fill price
-        fill_price = entry_order.avg_fill_price or current_price
+        # CRITICAL: Use ACTUAL fill price for SL/TP calculations
+        fill_price = entry_order.avg_fill_price or ticker_price
+        filled_qty = entry_order.filled_qty or quantity
 
-        # Create stop-loss order
+        # Recalculate stop-loss based on actual fill price
+        sl_price = self.risk.calculate_stop_loss_price(
+            side=position_side,
+            entry_price=fill_price,
+            stop_loss_pct=decision.stop_loss_pct,
+        )
+
+        # Recalculate take-profit based on actual fill price
+        tp_price = None
+        if decision.take_profit_pct:
+            tp_price = self.risk.calculate_take_profit_price(
+                side=position_side,
+                entry_price=fill_price,
+                take_profit_pct=decision.take_profit_pct,
+            )
+
+        # Create stop-loss order using actual fill price
         sl_order = Order(
             order_id=self._generate_order_id(),
             symbol=symbol,
             side=opposite_side,
             order_type=OrderType.STOP_LOSS,
-            quantity=quantity,
+            quantity=filled_qty,
             price=None,
             stop_price=sl_price,
             status=OrderStatus.PENDING,
@@ -359,7 +369,7 @@ class OrderExecutor:
                 symbol=symbol,
                 side=opposite_side,
                 order_type=OrderType.TAKE_PROFIT,
-                quantity=quantity,
+                quantity=filled_qty,
                 price=None,
                 stop_price=tp_price,
                 status=OrderStatus.PENDING,
@@ -487,6 +497,142 @@ class OrderExecutor:
         )
 
         return close_order
+
+    def execute_defensive_action(
+        self,
+        symbol: str,
+        action: WhaleDefensiveAction,
+        position_side: str,
+        position_qty: float,
+        entry_price: float,
+    ) -> Order | None:
+        """
+        Execute a defensive action in response to whale activity.
+
+        Args:
+            symbol: Trading pair
+            action: The defensive action to take
+            position_side: Current position side ("LONG" or "SHORT")
+            position_qty: Current position quantity
+            entry_price: Entry price of the position
+
+        Returns:
+            Order if executed, None if no action taken
+        """
+        if action == WhaleDefensiveAction.CLOSE_MARKET:
+            return self.close_position(symbol, "Whale defensive: close market")
+
+        elif action == WhaleDefensiveAction.REDUCE_50_PERCENT:
+            # Reduce position by 50%
+            reduce_qty = position_qty * 0.5
+
+            # Round to symbol precision
+            symbol_info = self.client.get_symbol_info(symbol)
+            step_size = float(symbol_info.get("quantityPrecision", 3))
+            reduce_qty = round(reduce_qty, int(step_size))
+
+            if reduce_qty <= 0:
+                return None
+
+            # Determine close side
+            side = "SELL" if position_side == "LONG" else "BUY"
+
+            reduce_order = Order(
+                order_id=self._generate_order_id(),
+                symbol=symbol,
+                side=side,
+                order_type=OrderType.CLOSE,
+                quantity=reduce_qty,
+                price=None,
+                stop_price=None,
+                status=OrderStatus.PENDING,
+            )
+
+            if self.is_dry_run:
+                current_price = self.client.get_ticker_price(symbol)
+                reduce_order = self._simulate_fill(reduce_order, current_price)
+                self._log_order(reduce_order, "SIMULATED_REDUCE_50")
+            else:
+                reduce_order = self._place_real_order(reduce_order)
+                self._log_order(reduce_order, "REDUCE_50_PLACED")
+
+            logger.info(
+                f"Whale defensive: reduced {symbol} position by 50%",
+                extra={"symbol": symbol, "reduced_qty": reduce_qty},
+            )
+
+            return reduce_order
+
+        elif action == WhaleDefensiveAction.TIGHTEN_STOP:
+            # Tighten stop-loss to breakeven or small profit
+            current_price = self.client.get_ticker_price(symbol)
+
+            # Calculate new stop at breakeven + small buffer
+            buffer_pct = 0.1  # 0.1% buffer
+            if position_side == "LONG":
+                new_stop = entry_price * (1 + buffer_pct / 100)
+                # Only tighten if current stop is worse
+                if current_price < new_stop:
+                    logger.info(
+                        f"Whale defensive: price below breakeven, can't tighten stop for {symbol}"
+                    )
+                    return None
+            else:  # SHORT
+                new_stop = entry_price * (1 - buffer_pct / 100)
+                if current_price > new_stop:
+                    logger.info(
+                        f"Whale defensive: price above breakeven, can't tighten stop for {symbol}"
+                    )
+                    return None
+
+            # Cancel existing SL/TP and place new stop
+            if symbol in self._active_brackets:
+                bracket = self._active_brackets[symbol]
+                old_sl = bracket.stop_loss_order
+
+                if not self.is_dry_run:
+                    try:
+                        self.client.cancel_all_orders(symbol)
+                    except Exception as e:
+                        logger.warning(f"Failed to cancel orders: {e}")
+
+                # Place new tighter stop
+                side = "SELL" if position_side == "LONG" else "BUY"
+                new_sl_order = Order(
+                    order_id=self._generate_order_id(),
+                    symbol=symbol,
+                    side=side,
+                    order_type=OrderType.STOP_LOSS,
+                    quantity=position_qty,
+                    price=None,
+                    stop_price=new_stop,
+                    status=OrderStatus.PENDING,
+                )
+
+                if self.is_dry_run:
+                    new_sl_order.status = OrderStatus.SIMULATED
+                    new_sl_order.is_dry_run = True
+                    self._log_order(new_sl_order, "SIMULATED_TIGHTEN_SL")
+                else:
+                    new_sl_order = self._place_real_order(new_sl_order)
+                    self._log_order(new_sl_order, "TIGHTEN_SL_PLACED")
+
+                # Update bracket
+                bracket.stop_loss_order = new_sl_order
+                self._active_brackets[symbol] = bracket
+
+                logger.info(
+                    f"Whale defensive: tightened stop for {symbol} to {new_stop:.2f}",
+                    extra={
+                        "symbol": symbol,
+                        "old_stop": old_sl.stop_price if old_sl else None,
+                        "new_stop": new_stop,
+                    },
+                )
+
+                return new_sl_order
+
+        return None
 
     def close_all_positions(self, reason: str = "Manual") -> list[Order]:
         """Close all open positions."""

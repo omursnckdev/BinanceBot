@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from config import Settings, SymbolConfig, TradingConfig, get_settings
+from config import Settings, SymbolConfig, TradingConfig, WhaleDefensiveAction, get_settings
 from data.market_data import MarketDataManager
 from signals.indicators import IndicatorCalculator, TechnicalSignal, TrendDirection
 from signals.sentiment import SentimentAnalyzer, SentimentSignal
@@ -30,17 +30,29 @@ logger: TradingLogger = get_logger(__name__)  # type: ignore
 
 
 class TradeAction(str, Enum):
-    """Possible trading actions."""
+    """
+    Possible trading actions.
 
-    LONG = "LONG"
-    SHORT = "SHORT"
-    FLAT = "FLAT"  # No position / close existing
-    HOLD = "HOLD"  # Maintain current position
+    IMPORTANT: FLAT means "no new entry" - it does NOT mean "close existing position".
+    Exits must be handled via explicit exit_reason or defensive_action.
+    """
+
+    LONG = "LONG"      # Open/maintain long position
+    SHORT = "SHORT"    # Open/maintain short position
+    FLAT = "FLAT"      # No entry signal (do NOT close existing positions!)
+    HOLD = "HOLD"      # Explicitly hold current state
 
 
 @dataclass
 class TradeDecision:
-    """Complete trading decision output."""
+    """
+    Complete trading decision output.
+
+    IMPORTANT distinction:
+    - action=FLAT means "don't open new position" (NOT "close existing")
+    - exit_reason (if set) means "close existing position with this reason"
+    - defensive_action (if set) means "execute this whale defensive action"
+    """
 
     symbol: str
     action: TradeAction
@@ -65,6 +77,10 @@ class TradeDecision:
     rejection_reason: str | None = None
     timestamp: float = 0.0
 
+    # EXPLICIT exit signals (new fields)
+    exit_reason: str | None = None  # If set, close position with this reason
+    defensive_action: WhaleDefensiveAction | None = None  # Whale defensive action
+
     def __post_init__(self) -> None:
         if self.timestamp == 0.0:
             self.timestamp = time.time()
@@ -87,6 +103,8 @@ class TradeDecision:
             "atr_pct": round(self.atr_pct, 4),
             "is_valid": self.is_valid,
             "rejection_reason": self.rejection_reason,
+            "exit_reason": self.exit_reason,
+            "defensive_action": self.defensive_action.value if self.defensive_action else None,
         }
 
 
@@ -223,6 +241,11 @@ class FusionStrategy:
         """
         Check if market conditions allow trading.
 
+        Includes spread/fee awareness for scalping:
+        - Basic spread check against max_spread_pct
+        - Tighter spread check for entries (spread_entry_threshold_pct)
+        - Liquidity check
+
         Returns: (is_ok, reason)
         """
         trading_config = self.settings.trading
@@ -231,12 +254,23 @@ class FusionStrategy:
         if atr_pct > trading_config.max_atr_pct:
             return False, f"ATR too high: {atr_pct:.2f}% > {trading_config.max_atr_pct}%"
 
-        # Check spread
+        # Check spread - basic limit
         conditions = self.market_data.get_market_conditions(symbol)
         spread_pct = conditions.get("spread_pct", 0)
 
         if spread_pct > trading_config.max_spread_pct:
             return False, f"Spread too high: {spread_pct:.4f}% > {trading_config.max_spread_pct}%"
+
+        # SCALPING: Tighter spread check for entries
+        # For small target profits (1-2%), spread + fees must not eat too much
+        # Typical fee: 0.04% maker/taker = ~0.08% round trip
+        # If spread_pct > spread_entry_threshold_pct, skip entry
+        if trading_config.skip_entry_on_high_spread:
+            if spread_pct > trading_config.spread_entry_threshold_pct:
+                return False, (
+                    f"Spread too high for scalping entry: {spread_pct:.4f}% > "
+                    f"{trading_config.spread_entry_threshold_pct:.4f}%"
+                )
 
         # Check liquidity
         bid_depth = conditions.get("bid_depth", 0)
@@ -385,16 +419,18 @@ class FusionStrategy:
         sentiment_signal = self.sentiment.generate_signal(symbol)
 
         # Check for whale alert requiring defensive action
+        # IMPORTANT: Return defensive_action, NOT FLAT - main loop handles the action
         if whale_signal.whale_alert_opposite and current_position_side:
+            defensive_action = whale_signal.recommended_action
             logger.whale_alert(
                 symbol=symbol,
                 whale_score=whale_signal.whale_score,
                 is_opposing=True,
-                action_taken="CLOSE_POSITION",
+                action_taken=defensive_action.value if defensive_action else "NONE",
             )
             return TradeDecision(
                 symbol=symbol,
-                action=TradeAction.FLAT,
+                action=TradeAction.HOLD,  # HOLD, not FLAT - let main loop handle defensive action
                 confidence=whale_signal.whale_confidence,
                 tech_score=tech_signal.tech_score,
                 whale_score=whale_signal.whale_score,
@@ -407,7 +443,8 @@ class FusionStrategy:
                 trend=tech_signal.trend,
                 atr_pct=tech_signal.atr_pct,
                 is_valid=True,
-                rejection_reason="Whale alert: defensive close",
+                rejection_reason=None,
+                defensive_action=defensive_action,  # Explicit defensive action
             )
 
         # Calculate final score
@@ -520,22 +557,26 @@ class FusionStrategy:
         current_price: float,
     ) -> tuple[bool, str]:
         """
-        Check if existing position should be closed.
+        Check if existing position should be closed due to opposing strong signal.
+
+        IMPORTANT: FLAT does NOT trigger close - only explicit opposite signals do.
+        Defensive actions (whale alerts) are handled separately via defensive_action field.
 
         Returns: (should_close, reason)
         """
         # Generate fresh decision
         decision = self.generate_decision(symbol, current_position_side)
 
-        # Check for opposite signal
-        if current_position_side == "LONG" and decision.action == TradeAction.SHORT:
-            return True, "Opposite signal: SHORT"
-        elif current_position_side == "SHORT" and decision.action == TradeAction.LONG:
-            return True, "Opposite signal: LONG"
+        # Check for strong opposite signal (reversal)
+        # Only close if there's a valid strong signal in the opposite direction
+        if decision.is_valid and decision.confidence >= self.settings.trading.entry_threshold:
+            if current_position_side == "LONG" and decision.action == TradeAction.SHORT:
+                return True, "Strong opposite signal: SHORT"
+            elif current_position_side == "SHORT" and decision.action == TradeAction.LONG:
+                return True, "Strong opposite signal: LONG"
 
-        # Check for flat signal
-        if decision.action == TradeAction.FLAT and decision.is_valid:
-            return True, "Flat signal from whale alert"
+        # FLAT does NOT close positions - it just means "no new entry"
+        # Defensive actions are handled via decision.defensive_action in main loop
 
         return False, ""
 
